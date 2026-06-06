@@ -1072,7 +1072,7 @@ def cmd_game(message):
     user = message.from_user
     row = get_user(user.id, user.first_name)
     if row and row[10] == 1:
-        bot.send_message(chat_id, "❌ Вы заблокированы!")
+        bot.send_message(chat_id,)
         return
     games[chat_id] = {
         'players': [user], 'started': False, 'host': user.id,
