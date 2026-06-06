@@ -138,7 +138,7 @@ def format_profile(user_id, name):
     row = get_user(user_id, name)
     if not row: return "Профиль табылмады!"
     rank = get_rank(row[8])
-    donor = "⭐ Донатор\n" if row[12] else ""
+    donor = "⭐ Донатор\n" if len(row) > 12 and row[12] else ""
     return (
         f"👤 {row[1]}\n{rank}\n{donor}\n"
         f"💵 Наличные: {row[2]}\n"
