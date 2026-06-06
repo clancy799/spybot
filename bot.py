@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 bot = telebot.TeleBot(BOT_TOKEN)
 
-SUPER_ADMIN_ID = 0  # Осы жерге өз ID-іңді қой
+SUPER_ADMIN_ID = 7949674678  # Осы жерге өз ID-іңді қой
 games = {}
 
 # ─── DATABASE ────────────────────────────────────────────────────────────────
