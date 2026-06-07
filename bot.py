@@ -39,6 +39,21 @@ def init_db():
         is_donor INTEGER DEFAULT 0,
         registered_at TEXT DEFAULT (datetime('now'))
     )''')
+    # Ескі database-ке жаңа бағандарды қос
+    for col, defn in [
+        ('is_banned', 'INTEGER DEFAULT 0'),
+        ('is_muted', 'INTEGER DEFAULT 0'),
+        ('is_donor', 'INTEGER DEFAULT 0'),
+    ]:
+        try:
+            c.execute(f'ALTER TABLE users ADD COLUMN {col} {defn}')
+        except Exception:
+            pass
+    # Барлық бандарды алып тастау
+    try:
+        c.execute('UPDATE users SET is_banned=0 WHERE is_banned=1')
+    except Exception:
+        pass
     c.execute('''CREATE TABLE IF NOT EXISTS admins (
         user_id INTEGER PRIMARY KEY,
         name TEXT,
@@ -215,7 +230,6 @@ LOCATION_HINTS = {
     "Зоопарк": "Здесь живут разные животные"
 }
 
-# RP өлім хабарлары
 DEATH_MESSAGES = [
     "{name} был застрелен неизвестным стрелком и покинул игру.",
     "{name} внезапно исчез при невыясненных обстоятельствах.",
@@ -318,6 +332,16 @@ LOCATIONS = {
 }
 
 LOCATION_CHOICES = list(LOCATIONS.keys())
+
+# Stars пакеттері
+DIAMOND_PACKAGES = [
+    (1, 15, "buy_stars_1"),
+    (5, 75, "buy_stars_5"),
+    (10, 150, "buy_stars_10"),
+    (30, 450, "buy_stars_30"),
+    (50, 750, "buy_stars_50"),
+    (100, 1500, "buy_stars_100"),
+]
 
 def get_max_rounds(player_count):
     if player_count <= 4: return 2
@@ -447,7 +471,7 @@ def cmd_shop(message):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("💵 Купить за наличные", callback_data="shop_cash"))
     markup.add(types.InlineKeyboardButton("💎 Купить за алмазы", callback_data="shop_diamonds"))
-    markup.add(types.InlineKeyboardButton("⭐ Купить алмазы", callback_data="shop_buy_diamonds"))
+    markup.add(types.InlineKeyboardButton("⭐ Купить алмазы за Stars", callback_data="shop_buy_diamonds"))
     bot.send_message(message.chat.id, "🛒 Магазин\n\nВыбери категорию:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "shop_cash")
@@ -460,8 +484,8 @@ def cb_shop_cash(call):
     markup.add(types.InlineKeyboardButton("◀️ Назад", callback_data="shop_back"))
     bot.edit_message_text(
         f"💵 Магазин за наличные\n\nБаланс: 💵 {cash}\n\n"
-        f"⚖️ Защита голоса — если все проголосуют против вас, 1 раз останетесь в игре (авто)\n"
-        f"🎭 Один правильный ответ — при вопросе правильный ответ будет выделен\n\nВыберите товар:",
+        f"⚖️ Защита голоса — если все проголосуют против вас, 1 раз останетесь автоматически\n"
+        f"🎭 Один правильный ответ — во время игры сами активируете для просмотра правильного ответа\n\nВыберите товар:",
         call.message.chat.id, call.message.message_id, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "shop_diamonds")
@@ -481,25 +505,55 @@ def cb_shop_diamonds(call):
 @bot.callback_query_handler(func=lambda call: call.data == "shop_buy_diamonds")
 def cb_shop_buy_diamonds(call):
     markup = types.InlineKeyboardMarkup(row_width=2)
-    packages = [
-        ("💎 1 — ⭐ 15", "buy_diamonds_1"),
-        ("💎 5 — ⭐ 75", "buy_diamonds_5"),
-        ("💎 10 — ⭐ 150", "buy_diamonds_10"),
-        ("💎 30 — ⭐ 450", "buy_diamonds_30"),
-        ("💎 50 — ⭐ 750", "buy_diamonds_50"),
-        ("💎 100 — ⭐ 1500", "buy_diamonds_100"),
-    ]
-    for text, data in packages:
-        markup.add(types.InlineKeyboardButton(text, callback_data=data))
+    for diamonds, stars, data in DIAMOND_PACKAGES:
+        markup.add(types.InlineKeyboardButton(f"💎 {diamonds} — ⭐ {stars}", callback_data=data))
     markup.add(types.InlineKeyboardButton("◀️ Назад", callback_data="shop_back"))
-    bot.edit_message_text("⭐ Купить алмазы\n\nВыберите пакет:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+    bot.edit_message_text(
+        "⭐ Купить алмазы за Telegram Stars\n\n💎 1 алмаз = ⭐ 15 Stars\n\nВыберите пакет:",
+        call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("buy_stars_"))
+def cb_buy_stars(call):
+    amount = int(call.data.replace("buy_stars_", ""))
+    stars = amount * 15
+    try:
+        bot.answer_callback_query(call.id)
+        bot.send_invoice(
+            chat_id=call.from_user.id,
+            title=f"💎 {amount} алмаз",
+            description=f"{amount} алмаз сатып алу — ойында қолдануға болады",
+            payload=f"diamonds_{amount}_{call.from_user.id}",
+            provider_token="",
+            currency="XTR",
+            prices=[types.LabeledPrice(label=f"💎 {amount} алмаз", amount=stars)],
+            start_parameter="buy_diamonds"
+        )
+    except Exception as e:
+        logger.error(f"Invoice error: {e}")
+        bot.answer_callback_query(call.id, f"❌ Қате: {e}", show_alert=True)
+
+@bot.pre_checkout_query_handler(func=lambda query: True)
+def pre_checkout(query):
+    bot.answer_pre_checkout_query(query.id, ok=True)
+
+@bot.message_handler(content_types=['successful_payment'])
+def successful_payment(message):
+    payload = message.successful_payment.invoice_payload
+    parts = payload.split("_")
+    if len(parts) == 3 and parts[0] == "diamonds":
+        amount = int(parts[1])
+        user_id = int(parts[2])
+        add_diamonds(user_id, amount)
+        add_log(user_id, "BUY_STARS", f"diamonds={amount}")
+        bot.send_message(message.chat.id,
+            f"✅ Оплата прошла успешно!\n\n💎 {amount} алмаз сіздің аккаунтқа қосылды!")
 
 @bot.callback_query_handler(func=lambda call: call.data == "shop_back")
 def cb_shop_back(call):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("💵 Купить за наличные", callback_data="shop_cash"))
     markup.add(types.InlineKeyboardButton("💎 Купить за алмазы", callback_data="shop_diamonds"))
-    markup.add(types.InlineKeyboardButton("⭐ Купить алмазы", callback_data="shop_buy_diamonds"))
+    markup.add(types.InlineKeyboardButton("⭐ Купить алмазы за Stars", callback_data="shop_buy_diamonds"))
     bot.edit_message_text("🛒 Магазин\n\nВыбери категорию:", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "buy_voice_protect")
@@ -530,7 +584,7 @@ def cb_buy_correct_answer(call):
     conn.close()
     add_log(call.from_user.id, "BUY", "correct_answer")
     bot.answer_callback_query(call.id, "✅ Куплено!")
-    bot.send_message(call.from_user.id, "✅ Куплено: 🎭 Один правильный ответ\n\nПри следующем вопросе правильный ответ будет выделен!")
+    bot.send_message(call.from_user.id, "✅ Куплено: 🎭 Один правильный ответ\n\nВо время игры нажмите кнопку в купленных товарах чтобы активировать!")
 
 @bot.callback_query_handler(func=lambda call: call.data == "buy_rifle")
 def cb_buy_rifle(call):
@@ -545,7 +599,7 @@ def cb_buy_rifle(call):
     conn.close()
     add_log(call.from_user.id, "BUY", "rifle")
     bot.answer_callback_query(call.id, "✅ Куплено!")
-    bot.send_message(call.from_user.id, "✅ Куплено: 🔫 Винтовка\n\nТолько для шпиона! Можете устранить одного игрока во время игры.")
+    bot.send_message(call.from_user.id, "✅ Куплено: 🔫 Винтовка\n\nТолько для шпиона! Во время игры нажмите кнопку в купленных товарах.")
 
 @bot.callback_query_handler(func=lambda call: call.data == "buy_spy_device")
 def cb_buy_spy_device(call):
@@ -560,7 +614,7 @@ def cb_buy_spy_device(call):
     conn.close()
     add_log(call.from_user.id, "BUY", "spy_device")
     bot.answer_callback_query(call.id, "✅ Куплено!")
-    bot.send_message(call.from_user.id, "✅ Куплено: 📡 Шпионское устройство\n\nТолько для шпиона! Даёт подсказку о локации.")
+    bot.send_message(call.from_user.id, "✅ Куплено: 📡 Шпионское устройство\n\nТолько для шпиона! Во время игры нажмите кнопку в купленных товарах.")
 
 # ─── АДМИН ПАНЕЛЬ ────────────────────────────────────────────────────────────
 @bot.message_handler(commands=['admin'])
@@ -579,16 +633,16 @@ def cmd_admin(message):
     markup.add(types.InlineKeyboardButton("📍 Локациялар", callback_data="adm_locs"))
     markup.add(types.InlineKeyboardButton("👥 Ойыншылар", callback_data="adm_players"))
     markup.add(types.InlineKeyboardButton("💰 Экономика", callback_data="adm_economy"))
-    markup.add(types.InlineKeyboardButton("📢 Хабарлама жіберу", callback_data="adm_broadcast_menu"))
-    markup.add(types.InlineKeyboardButton("📊 Бақылау (Logs)", callback_data="adm_logs"))
+    markup.add(types.InlineKeyboardButton("📢 Рассылка", callback_data="adm_broadcast_menu"))
+    markup.add(types.InlineKeyboardButton("📊 Логи", callback_data="adm_logs"))
     if is_super_admin(message.from_user.id):
         markup.add(types.InlineKeyboardButton("👑 Super Admin", callback_data="adm_super"))
     bot.send_message(message.chat.id,
-        f"⚙️ Админ панель\n\n"
-        f"👥 Ойыншылар: {total_users}\n"
-        f"🎲 Жалпы ойындар: {total_games}\n"
-        f"🎮 Белсенді ойындар: {len(games)}\n\n"
-        f"Бөлім таңда:", reply_markup=markup)
+        f"⚙️ Панель администратора\n\n"
+        f"👥 Игроков: {total_users}\n"
+        f"🎲 Всего игр: {total_games}\n"
+        f"🎮 Активных игр: {len(games)}\n\n"
+        f"Выбери раздел:", reply_markup=markup)
 
 def admin_main_markup(user_id):
     markup = types.InlineKeyboardMarkup()
@@ -597,8 +651,8 @@ def admin_main_markup(user_id):
     markup.add(types.InlineKeyboardButton("📍 Локациялар", callback_data="adm_locs"))
     markup.add(types.InlineKeyboardButton("👥 Ойыншылар", callback_data="adm_players"))
     markup.add(types.InlineKeyboardButton("💰 Экономика", callback_data="adm_economy"))
-    markup.add(types.InlineKeyboardButton("📢 Хабарлама жіберу", callback_data="adm_broadcast_menu"))
-    markup.add(types.InlineKeyboardButton("📊 Бақылау (Logs)", callback_data="adm_logs"))
+    markup.add(types.InlineKeyboardButton("📢 Рассылка", callback_data="adm_broadcast_menu"))
+    markup.add(types.InlineKeyboardButton("📊 Логи", callback_data="adm_logs"))
     if is_super_admin(user_id):
         markup.add(types.InlineKeyboardButton("👑 Super Admin", callback_data="adm_super"))
     return markup
@@ -615,27 +669,28 @@ def cb_adm_back(call):
     conn.close()
     try:
         bot.edit_message_text(
-            f"⚙️ Админ панель\n\n👥 Ойыншылар: {total_users}\n🎲 Жалпы ойындар: {total_games}\n🎮 Белсенді: {len(games)}\n\nБөлім таңда:",
+            f"⚙️ Панель администратора\n\n👥 Игроков: {total_users}\n🎲 Всего игр: {total_games}\n🎮 Активных: {len(games)}\n\nВыбери раздел:",
             call.message.chat.id, call.message.message_id,
             reply_markup=admin_main_markup(call.from_user.id))
     except Exception:
         pass
 
-# 🎮 ОЙЫНДЫ БАСҚАРУ
 @bot.callback_query_handler(func=lambda call: call.data == "adm_game")
 def cb_adm_game(call):
     if not is_admin(call.from_user.id): return
     if not games:
-        bot.answer_callback_query(call.id, "Белсенді ойын жоқ!", show_alert=True)
+        bot.answer_callback_query(call.id, "Нет активных игр!", show_alert=True)
         return
-    text = "🎮 Белсенді ойындар:\n\n"
+    text = "🎮 Активные игры:\n\n"
     markup = types.InlineKeyboardMarkup()
     for chat_id, game in games.items():
         status = "▶️" if game.get('started') else "⏳"
         players_count = len(game['players'])
-        text += f"{status} Chat: {chat_id} | {players_count} ойыншы\n"
-        markup.add(types.InlineKeyboardButton(f"🛑 {chat_id} тоқтату", callback_data=f"adm_stop_{chat_id}"))
-        markup.add(types.InlineKeyboardButton(f"⏭ {chat_id} келесі раунд", callback_data=f"adm_next_{chat_id}"))
+        round_info = f"Раунд {game.get('round', 0)}" if game.get('started') else "Лобби"
+        text += f"{status} Chat: {chat_id} | {players_count} игр. | {round_info}\n"
+        markup.add(types.InlineKeyboardButton(f"🛑 Остановить {chat_id}", callback_data=f"adm_stop_{chat_id}"))
+        if game.get('started'):
+            markup.add(types.InlineKeyboardButton(f"⏭ След. раунд {chat_id}", callback_data=f"adm_next_{chat_id}"))
     markup.add(types.InlineKeyboardButton("◀️ Назад", callback_data="adm_back"))
     try:
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
@@ -648,7 +703,7 @@ def cb_adm_stop(call):
     chat_id = int(call.data.replace("adm_stop_", ""))
     end_game(chat_id, "🛑 Игра остановлена администратором!")
     add_log(call.from_user.id, "ADMIN_STOP", f"chat={chat_id}")
-    bot.answer_callback_query(call.id, f"✅ {chat_id} ойыны тоқтатылды!")
+    bot.answer_callback_query(call.id, f"✅ Игра {chat_id} остановлена!")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("adm_next_"))
 def cb_adm_next(call):
@@ -658,37 +713,35 @@ def cb_adm_next(call):
     if game and game.get('started'):
         next_round(chat_id)
         add_log(call.from_user.id, "ADMIN_NEXT_ROUND", f"chat={chat_id}")
-        bot.answer_callback_query(call.id, "✅ Келесі раунд басталды!")
+        bot.answer_callback_query(call.id, "✅ Следующий раунд!")
     else:
-        bot.answer_callback_query(call.id, "❌ Ойын табылмады!")
+        bot.answer_callback_query(call.id, "❌ Игра не найдена!")
 
-# 🕵️ РӨЛДЕРДІ БАСҚАРУ
 @bot.callback_query_handler(func=lambda call: call.data == "adm_roles")
 def cb_adm_roles(call):
     if not is_admin(call.from_user.id): return
     if not games:
-        bot.answer_callback_query(call.id, "Белсенді ойын жоқ!", show_alert=True)
+        bot.answer_callback_query(call.id, "Нет активных игр!", show_alert=True)
         return
-    text = "🕵️ Белсенді ойындар рөлдері:\n\n"
+    text = "🕵️ Роли в активных играх:\n\n"
     for chat_id, game in games.items():
         if game.get('started'):
             spy_name = next((p.first_name for p in game['players'] if p.id == game['spy']), "?")
             players_list = ", ".join(p.first_name for p in game['players'])
             text += f"Chat {chat_id}:\n🕵️ Шпион: {spy_name}\n📍 Локация: {game['location']}\n👥 {players_list}\n\n"
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("🔀 Шпионды өзгерту: /setspy [chat_id] [user_id]", callback_data="adm_setspy_info"))
+    markup.add(types.InlineKeyboardButton("🔀 Сменить шпиона: /setspy [chat_id] [user_id]", callback_data="adm_setspy_info"))
     markup.add(types.InlineKeyboardButton("◀️ Назад", callback_data="adm_back"))
     try:
-        bot.edit_message_text(text if text != "🕵️ Белсенді ойындар рөлдері:\n\n" else "Белсенді ойын жоқ",
+        bot.edit_message_text(text if "Chat" in text else "Нет активных игр",
             call.message.chat.id, call.message.message_id, reply_markup=markup)
     except Exception:
         pass
 
 @bot.callback_query_handler(func=lambda call: call.data == "adm_setspy_info")
 def cb_adm_setspy_info(call):
-    bot.answer_callback_query(call.id, "🕵️ Шпионды өзгерту:\n/setspy [chat_id] [user_id]\n\nМысалы: /setspy -100123456 987654321", show_alert=True)
+    bot.answer_callback_query(call.id, "🕵️ Сменить шпиона:\n/setspy [chat_id] [user_id]", show_alert=True)
 
-# 📍 ЛОКАЦИЯЛАР
 @bot.callback_query_handler(func=lambda call: call.data == "adm_locs")
 def cb_adm_locs(call):
     if not is_admin(call.from_user.id): return
@@ -703,7 +756,7 @@ def cb_adm_locs(call):
         markup.add(types.InlineKeyboardButton(f"{status} {loc}", callback_data=f"adm_loc_{loc}"))
     markup.add(types.InlineKeyboardButton("◀️ Назад", callback_data="adm_back"))
     try:
-        bot.edit_message_text("📍 Локациялар\n\n✅ қосылған | ❌ өшірілген:",
+        bot.edit_message_text("📍 Локации\n\n✅ включена | ❌ отключена:",
             call.message.chat.id, call.message.message_id, reply_markup=markup)
     except Exception:
         pass
@@ -718,17 +771,16 @@ def cb_adm_loc_toggle(call):
     exists = c.fetchone()
     if exists:
         c.execute("DELETE FROM disabled_locations WHERE location_name=?", (loc,))
-        msg = f"✅ {loc} қосылды!"
+        msg = f"✅ {loc} включена!"
     else:
         c.execute("INSERT INTO disabled_locations (location_name) VALUES (?)", (loc,))
-        msg = f"❌ {loc} өшірілді!"
+        msg = f"❌ {loc} отключена!"
     conn.commit()
     conn.close()
     add_log(call.from_user.id, "ADMIN_TOGGLE_LOC", loc)
     bot.answer_callback_query(call.id, msg)
     cb_adm_locs(call)
 
-# 👥 ОЙЫНШЫЛАР
 @bot.callback_query_handler(func=lambda call: call.data == "adm_players")
 def cb_adm_players(call):
     if not is_admin(call.from_user.id): return
@@ -739,7 +791,7 @@ def cb_adm_players(call):
     markup.add(types.InlineKeyboardButton("🗑 /resetuser [id]", callback_data="adm_info_reset"))
     markup.add(types.InlineKeyboardButton("◀️ Назад", callback_data="adm_back"))
     try:
-        bot.edit_message_text("👥 Ойыншылар басқару:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+        bot.edit_message_text("👥 Управление игроками:", call.message.chat.id, call.message.message_id, reply_markup=markup)
     except Exception:
         pass
 
@@ -747,13 +799,12 @@ def cb_adm_players(call):
 def cb_adm_info(call):
     info = {
         "adm_info_ban": "🚫 Бан:\n/ban [user_id]",
-        "adm_info_unban": "✅ Бан алу:\n/unban [user_id]",
+        "adm_info_unban": "✅ Разбан:\n/unban [user_id]",
         "adm_info_mute": "🔇 Мут:\n/mute [user_id]",
-        "adm_info_reset": "🗑 Тазалау:\n/resetuser [user_id]",
+        "adm_info_reset": "🗑 Сброс профиля:\n/resetuser [user_id]",
     }
     bot.answer_callback_query(call.id, info.get(call.data, ""), show_alert=True)
 
-# 💰 ЭКОНОМИКА
 @bot.callback_query_handler(func=lambda call: call.data == "adm_economy")
 def cb_adm_economy(call):
     if not is_admin(call.from_user.id): return
@@ -763,20 +814,19 @@ def cb_adm_economy(call):
     markup.add(types.InlineKeyboardButton("⭐ /setdonor [id]", callback_data="adm_eco_donor"))
     markup.add(types.InlineKeyboardButton("◀️ Назад", callback_data="adm_back"))
     try:
-        bot.edit_message_text("💰 Экономика басқару:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+        bot.edit_message_text("💰 Управление экономикой:", call.message.chat.id, call.message.message_id, reply_markup=markup)
     except Exception:
         pass
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("adm_eco_"))
 def cb_adm_eco_info(call):
     info = {
-        "adm_eco_cash": "💵 Ақша қосу:\n/addcash [user_id] [сумма]",
-        "adm_eco_dia": "💎 Алмаз қосу:\n/adddiamonds [user_id] [сумма]",
-        "adm_eco_donor": "⭐ Донатор:\n/setdonor [user_id]",
+        "adm_eco_cash": "💵 Добавить наличные:\n/addcash [user_id] [сумма]",
+        "adm_eco_dia": "💎 Добавить алмазы:\n/adddiamonds [user_id] [сумма]",
+        "adm_eco_donor": "⭐ Статус донатора:\n/setdonor [user_id]",
     }
     bot.answer_callback_query(call.id, info.get(call.data, ""), show_alert=True)
 
-# 📢 BROADCAST МЕНЮ
 @bot.callback_query_handler(func=lambda call: call.data == "adm_broadcast_menu")
 def cb_adm_broadcast_menu(call):
     if not is_admin(call.from_user.id): return
@@ -789,13 +839,12 @@ def cb_adm_broadcast_menu(call):
     markup.add(types.InlineKeyboardButton("◀️ Назад", callback_data="adm_back"))
     try:
         bot.edit_message_text(
-            f"📢 Хабарлама жіберу\n\n👥 Жалпы ойыншылар: {total}\n\n"
-            f"Команда:\n/broadcast [текст]\n\nМысалы:\n/broadcast Привет всем! Новое обновление!",
+            f"📢 Рассылка сообщений\n\n👥 Всего игроков в базе: {total}\n\n"
+            f"Команда:\n/broadcast [текст]\n\nПример:\n/broadcast Привет! Новое обновление!",
             call.message.chat.id, call.message.message_id, reply_markup=markup)
     except Exception:
         pass
 
-# 📊 LOGS
 @bot.callback_query_handler(func=lambda call: call.data == "adm_logs")
 def cb_adm_logs(call):
     if not is_admin(call.from_user.id): return
@@ -805,9 +854,9 @@ def cb_adm_logs(call):
     rows = c.fetchall()
     conn.close()
     if not rows:
-        bot.answer_callback_query(call.id, "Журнал бос!", show_alert=True)
+        bot.answer_callback_query(call.id, "Лог пуст!", show_alert=True)
         return
-    text = "📊 Соңғы 15 әрекет:\n\n"
+    text = "📊 Последние 15 действий:\n\n"
     for uid, action, details, ts in rows:
         text += f"[{ts[:16]}] {uid} → {action}"
         if details:
@@ -820,17 +869,16 @@ def cb_adm_logs(call):
     except Exception:
         bot.send_message(call.message.chat.id, text)
 
-# 👑 SUPER ADMIN
 @bot.callback_query_handler(func=lambda call: call.data == "adm_super")
 def cb_adm_super(call):
     if not is_super_admin(call.from_user.id):
-        bot.answer_callback_query(call.id, "❌ Рұқсат жоқ!")
+        bot.answer_callback_query(call.id, "❌ Нет доступа!")
         return
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("👤 /addadmin [id]", callback_data="adm_s_info_add"))
     markup.add(types.InlineKeyboardButton("🗑 /removeadmin [id]", callback_data="adm_s_info_remove"))
-    markup.add(types.InlineKeyboardButton("💾 DB резервтік көшіру", callback_data="adm_s_backup"))
-    markup.add(types.InlineKeyboardButton("⚠️ Барлық статистиканы тазалау", callback_data="adm_s_resetall"))
+    markup.add(types.InlineKeyboardButton("💾 Резервная копия БД", callback_data="adm_s_backup"))
+    markup.add(types.InlineKeyboardButton("⚠️ Сбросить всю статистику", callback_data="adm_s_resetall"))
     markup.add(types.InlineKeyboardButton("◀️ Назад", callback_data="adm_back"))
     try:
         bot.edit_message_text("👑 Super Admin панель:", call.message.chat.id, call.message.message_id, reply_markup=markup)
@@ -840,8 +888,8 @@ def cb_adm_super(call):
 @bot.callback_query_handler(func=lambda call: call.data in ["adm_s_info_add", "adm_s_info_remove"])
 def cb_adm_s_info(call):
     info = {
-        "adm_s_info_add": "👤 Админ қосу:\n/addadmin [user_id]",
-        "adm_s_info_remove": "🗑 Админ алу:\n/removeadmin [user_id]",
+        "adm_s_info_add": "👤 Добавить админа:\n/addadmin [user_id]",
+        "adm_s_info_remove": "🗑 Убрать админа:\n/removeadmin [user_id]",
     }
     bot.answer_callback_query(call.id, info.get(call.data, ""), show_alert=True)
 
@@ -850,20 +898,20 @@ def cb_adm_s_backup(call):
     if not is_super_admin(call.from_user.id): return
     try:
         with open(DB_PATH, 'rb') as f:
-            bot.send_document(call.from_user.id, f, caption="💾 Database резервтік көшірмесі")
-        bot.answer_callback_query(call.id, "✅ Жіберілді!")
+            bot.send_document(call.from_user.id, f, caption="💾 Резервная копия базы данных")
+        bot.answer_callback_query(call.id, "✅ Отправлено!")
         add_log(call.from_user.id, "SUPER_BACKUP", "")
     except Exception as e:
-        bot.answer_callback_query(call.id, f"❌ Қате: {e}")
+        bot.answer_callback_query(call.id, f"❌ Ошибка: {e}")
 
 @bot.callback_query_handler(func=lambda call: call.data == "adm_s_resetall")
 def cb_adm_s_resetall(call):
     if not is_super_admin(call.from_user.id): return
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("⚠️ Иә, тазала!", callback_data="adm_s_resetall_confirm"))
-    markup.add(types.InlineKeyboardButton("❌ Жоқ", callback_data="adm_super"))
+    markup.add(types.InlineKeyboardButton("⚠️ Да, сбросить!", callback_data="adm_s_resetall_confirm"))
+    markup.add(types.InlineKeyboardButton("❌ Нет", callback_data="adm_super"))
     try:
-        bot.edit_message_text("⚠️ Барлық статистика тазаланады!\n\nРастайсың ба?",
+        bot.edit_message_text("⚠️ Вся статистика будет сброшена!\n\nПодтвердить?",
             call.message.chat.id, call.message.message_id, reply_markup=markup)
     except Exception:
         pass
@@ -877,7 +925,7 @@ def cb_adm_s_resetall_confirm(call):
     conn.commit()
     conn.close()
     add_log(call.from_user.id, "SUPER_RESET_ALL", "")
-    bot.answer_callback_query(call.id, "✅ Барлық статистика тазаланды!")
+    bot.answer_callback_query(call.id, "✅ Вся статистика сброшена!")
 
 # ─── АДМИН КОМАНДАЛАР ────────────────────────────────────────────────────────
 @bot.message_handler(commands=['addcash'])
@@ -891,9 +939,9 @@ def cmd_addcash(message):
         user_id, amount = int(parts[1]), int(parts[2])
         add_cash(user_id, amount)
         add_log(message.from_user.id, "ADMIN_ADDCASH", f"target={user_id} amount={amount}")
-        bot.send_message(message.chat.id, f"✅ {user_id} аккаунтына 💵 {amount} қосылды!")
+        bot.send_message(message.chat.id, f"✅ Игроку {user_id} добавлено 💵 {amount}!")
     except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Қате: {e}")
+        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
 
 @bot.message_handler(commands=['adddiamonds'])
 def cmd_adddiamonds(message):
@@ -906,9 +954,9 @@ def cmd_adddiamonds(message):
         user_id, amount = int(parts[1]), int(parts[2])
         add_diamonds(user_id, amount)
         add_log(message.from_user.id, "ADMIN_ADDDIAMONDS", f"target={user_id} amount={amount}")
-        bot.send_message(message.chat.id, f"✅ {user_id} аккаунтына 💎 {amount} қосылды!")
+        bot.send_message(message.chat.id, f"✅ Игроку {user_id} добавлено 💎 {amount}!")
     except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Қате: {e}")
+        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
 
 @bot.message_handler(commands=['ban'])
 def cmd_ban(message):
@@ -924,7 +972,7 @@ def cmd_ban(message):
     conn.commit()
     conn.close()
     add_log(message.from_user.id, "ADMIN_BAN", f"target={user_id}")
-    bot.send_message(message.chat.id, f"🚫 {user_id} банға жіберілді!")
+    bot.send_message(message.chat.id, f"🚫 Игрок {user_id} заблокирован!")
 
 @bot.message_handler(commands=['unban'])
 def cmd_unban(message):
@@ -940,7 +988,7 @@ def cmd_unban(message):
     conn.commit()
     conn.close()
     add_log(message.from_user.id, "ADMIN_UNBAN", f"target={user_id}")
-    bot.send_message(message.chat.id, f"✅ {user_id} банан алынды!")
+    bot.send_message(message.chat.id, f"✅ Игрок {user_id} разблокирован!")
 
 @bot.message_handler(commands=['mute'])
 def cmd_mute(message):
@@ -956,7 +1004,7 @@ def cmd_mute(message):
     conn.commit()
     conn.close()
     add_log(message.from_user.id, "ADMIN_MUTE", f"target={user_id}")
-    bot.send_message(message.chat.id, f"🔇 {user_id} мутқа алынды!")
+    bot.send_message(message.chat.id, f"🔇 Игрок {user_id} замьючен!")
 
 @bot.message_handler(commands=['setdonor'])
 def cmd_setdonor(message):
@@ -972,7 +1020,7 @@ def cmd_setdonor(message):
     conn.commit()
     conn.close()
     add_log(message.from_user.id, "ADMIN_SETDONOR", f"target={user_id}")
-    bot.send_message(message.chat.id, f"⭐ {user_id} донатор мәртебесі берілді!")
+    bot.send_message(message.chat.id, f"⭐ Игроку {user_id} выдан статус донатора!")
 
 @bot.message_handler(commands=['resetuser'])
 def cmd_resetuser(message):
@@ -988,7 +1036,7 @@ def cmd_resetuser(message):
     conn.commit()
     conn.close()
     add_log(message.from_user.id, "ADMIN_RESETUSER", f"target={user_id}")
-    bot.send_message(message.chat.id, f"✅ {user_id} деректері тазаланды!")
+    bot.send_message(message.chat.id, f"✅ Профиль игрока {user_id} сброшен!")
 
 @bot.message_handler(commands=['broadcast'])
 def cmd_broadcast(message):
@@ -1005,12 +1053,13 @@ def cmd_broadcast(message):
     sent = 0
     for (uid,) in users:
         try:
-            bot.send_message(uid, f"📢 Хабарлама:\n\n{text}")
+            bot.send_message(uid, text)
             sent += 1
+            time.sleep(0.05)
         except Exception:
             pass
     add_log(message.from_user.id, "ADMIN_BROADCAST", f"sent={sent}")
-    bot.send_message(message.chat.id, f"✅ {sent} ойыншыға жіберілді!")
+    bot.send_message(message.chat.id, f"✅ Отправлено {sent} игрокам!")
 
 @bot.message_handler(commands=['setspy'])
 def cmd_setspy(message):
@@ -1024,21 +1073,21 @@ def cmd_setspy(message):
         user_id = int(parts[2])
         game = get_game(chat_id)
         if not game:
-            bot.send_message(message.chat.id, "❌ Ойын табылмады!")
+            bot.send_message(message.chat.id, "❌ Игра не найдена!")
             return
         player = next((p for p in game['players'] if p.id == user_id), None)
         if not player:
-            bot.send_message(message.chat.id, "❌ Ойыншы табылмады!")
+            bot.send_message(message.chat.id, "❌ Игрок не найден!")
             return
         game['spy'] = user_id
         add_log(message.from_user.id, "ADMIN_SETSPY", f"chat={chat_id} spy={user_id}")
-        bot.send_message(message.chat.id, f"✅ {player.first_name} шпион болды!")
+        bot.send_message(message.chat.id, f"✅ {player.first_name} теперь шпион!")
         try:
-            bot.send_message(user_id, "🕵️ Администратор сізді шпион етіп тағайындады!")
+            bot.send_message(user_id, "🕵️ Администратор назначил вас шпионом!")
         except Exception:
             pass
     except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Қате: {e}")
+        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
 
 @bot.message_handler(commands=['stats'])
 def cmd_stats(message):
@@ -1058,12 +1107,12 @@ def cmd_stats(message):
     conn.close()
     bot.send_message(message.chat.id,
         f"📊 Статистика:\n\n"
-        f"👥 Ойыншылар: {total_users}\n"
-        f"🎲 Жалпы ойындар: {total_games}\n"
-        f"💵 Жалпы ақша: {total_cash}\n"
-        f"💎 Жалпы алмаз: {total_diamonds}\n"
-        f"🚫 Банда: {banned}\n"
-        f"🎮 Белсенді ойындар: {len(games)}")
+        f"👥 Игроков: {total_users}\n"
+        f"🎲 Всего игр: {total_games}\n"
+        f"💵 Всего наличных: {total_cash}\n"
+        f"💎 Всего алмазов: {total_diamonds}\n"
+        f"🚫 В бане: {banned}\n"
+        f"🎮 Активных игр: {len(games)}")
 
 @bot.message_handler(commands=['addadmin'])
 def cmd_addadmin(message):
@@ -1080,7 +1129,7 @@ def cmd_addadmin(message):
     conn.commit()
     conn.close()
     add_log(message.from_user.id, "SUPER_ADDADMIN", f"target={user_id}")
-    bot.send_message(message.chat.id, f"✅ {user_id} админге қосылды!")
+    bot.send_message(message.chat.id, f"✅ Игрок {user_id} добавлен в админы!")
 
 @bot.message_handler(commands=['removeadmin'])
 def cmd_removeadmin(message):
@@ -1096,7 +1145,7 @@ def cmd_removeadmin(message):
     conn.commit()
     conn.close()
     add_log(message.from_user.id, "SUPER_REMOVEADMIN", f"target={user_id}")
-    bot.send_message(message.chat.id, f"✅ {user_id} админнен алынды!")
+    bot.send_message(message.chat.id, f"✅ Игрок {user_id} убран из админов!")
 
 # ─── ОЙЫН ────────────────────────────────────────────────────────────────────
 @bot.message_handler(commands=['game'])
@@ -1110,7 +1159,6 @@ def cmd_game(message):
         return
     user = message.from_user
     get_user(user.id, user.first_name)
-    # Бан тексеру жоқ — кез келген адам ойнай алады
     games[chat_id] = {
         'players': [user], 'started': False, 'host': user.id,
         'start_time': None, 'eliminated': [], 'round': 0,
@@ -1118,8 +1166,8 @@ def cmd_game(message):
         'correct_answer': {}, 'spy_guessed': None, 'votes': {},
         'voted': [], 'vote_detail': {}, 'location': None, 'spy': None,
         'timer_msg_id': None, 'current_player_index': 0,
-        'lobby_msg_id': None, 'last_activity': time.time(), 'max_rounds': 3,
-        'rifle_used': False
+        'lobby_msg_id': None, 'last_activity': time.time(),
+        'max_rounds': 3, 'rifle_used': False
     }
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("✅ Войти в игру", callback_data="join"))
@@ -1193,11 +1241,10 @@ def start_the_game(chat_id):
     if not game or game.get('started'): return
     enabled_locs = get_enabled_locations()
     if not enabled_locs:
-        bot.send_message(chat_id, "❌ Барлық локациялар өшірілген!")
+        bot.send_message(chat_id, "❌ Все локации отключены!")
         return
     location = random.choice(enabled_locs)
-    all_players = game['players'][:]
-    spy = random.choice(all_players)
+    spy = random.choice(game['players'][:])
     max_rounds = get_max_rounds(len(game['players']))
     max_time = get_max_game_time(len(game['players']))
     game.update({
@@ -1284,44 +1331,41 @@ def send_next_player_question(chat_id):
     location = game['location']
     question = game['player_questions'][player.id]
     ans_list = game['player_answers'][player.id]
-    correct = game['correct_answer'][player.id]
     game['last_activity'] = time.time()
 
     bot.send_message(chat_id, f"❓ Раунд {round_num} — Вопрос для {player.first_name}!")
 
     row = get_user(player.id, player.first_name)
-    has_correct_answer = row[6] > 0 if row else False
     has_rifle = row[7] > 0 if row else False
     has_device = row[4] > 0 if row else False
+    has_correct = row[6] > 0 if row else False
 
+    # Жауап батырмалары
     markup = types.InlineKeyboardMarkup()
+    for i, ans in enumerate(ans_list):
+        markup.add(types.InlineKeyboardButton(ans, callback_data=f"ans_{chat_id}_{player.id}_{i}"))
 
     if player.id == game['spy']:
-        for i, ans in enumerate(ans_list):
-            markup.add(types.InlineKeyboardButton(ans, callback_data=f"ans_{chat_id}_{player.id}_{i}"))
-        # Барлық шпионға заттар шығады — сатып алмаса хабарлама шығады
-        markup.add(types.InlineKeyboardButton(
-            f"🔫 Винтовка {'✅' if has_rifle else '❌'}", 
+        dm_text = f"🕵️ Ты — ШПИОН!\n\n⚠️ Ты не знаешь локацию!\n\n❓ Вопрос: {question}\n\nВыбери ответ:"
+        # Купленные товары — бөлек хабарлама
+        items_markup = types.InlineKeyboardMarkup()
+        items_markup.add(types.InlineKeyboardButton(
+            f"🔫 Винтовка {'✅' if has_rifle else '❌'}",
             callback_data=f"use_rifle_{chat_id}"))
-        markup.add(types.InlineKeyboardButton(
-            f"📡 Устройство {'✅' if has_device else '❌'}", 
+        items_markup.add(types.InlineKeyboardButton(
+            f"📡 Устройство {'✅' if has_device else '❌'}",
             callback_data=f"use_device_{chat_id}"))
-        dm_text = f"🕵️ Ты — ШПИОН!\n\n⚠️ Ты не знаешь локацию!\n\n❓ Вопрос: {question}\n\nВыбери ответ:\n\n🎒 Купленные товары внизу"
     else:
-        for i, ans in enumerate(ans_list):
-            btn = f"✅ {ans}" if has_correct_answer and ans == correct else ans
-            markup.add(types.InlineKeyboardButton(btn, callback_data=f"ans_{chat_id}_{player.id}_{i}"))
         dm_text = f"📍 Локация: {location}\n\n🔍 Среди вас есть шпион!\n\n❓ Вопрос: {question}\n\nВыбери ответ:"
-        if has_correct_answer:
-            dm_text += "\n\n🎭 Правильный ответ выделен ✅"
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute("UPDATE users SET correct_answer=correct_answer-1 WHERE user_id=?", (player.id,))
-            conn.commit()
-            conn.close()
+        items_markup = types.InlineKeyboardMarkup()
+        items_markup.add(types.InlineKeyboardButton(
+            f"🎭 Правильный ответ {'✅' if has_correct else '❌'}",
+            callback_data=f"use_correct_{chat_id}_{player.id}"))
 
     try:
         bot.send_message(player.id, dm_text, reply_markup=markup)
+        # Купленные товары бөлек хабарлама
+        bot.send_message(player.id, "🎒 Купленные товары:", reply_markup=items_markup)
     except Exception as e:
         logger.warning(f"DM error: {e}")
 
@@ -1365,6 +1409,10 @@ def cb_rifle_shoot(call):
     if game.get('rifle_used'):
         bot.answer_callback_query(call.id, "❌ Уже использована!")
         return
+    row = get_user(call.from_user.id, call.from_user.first_name)
+    if not row or row[7] < 1:
+        bot.answer_callback_query(call.id, "❌ Нет винтовки!")
+        return
     target = next((p for p in game['players'] if p.id == target_id), None)
     if not target or target_id in game['eliminated']:
         bot.answer_callback_query(call.id, "❌ Игрок уже выбыл!")
@@ -1378,14 +1426,12 @@ def cb_rifle_shoot(call):
     game['rifle_used'] = True
     add_log(call.from_user.id, "USE_RIFLE", f"target={target_id} chat={chat_id}")
     bot.answer_callback_query(call.id, "✅ Выстрел произведён!")
-    # RP хабар — нақты ник көрсетеді
     death_msg = random.choice(DEATH_MESSAGES).format(name=target.first_name)
     bot.send_message(chat_id, f"🔫 {death_msg}")
     try:
         bot.send_message(target_id, "💀 Вы были устранены шпионом и выбыли из игры.\n\nНаблюдайте за происходящим!")
     except Exception:
         pass
-    # 1 ойыншы қалса тексер
     ap = active_players(game)
     if len(ap) <= 1:
         t_str = elapsed_str(game['start_time'])
@@ -1414,6 +1460,35 @@ def cb_use_device(call):
     add_log(call.from_user.id, "USE_DEVICE", f"chat={chat_id}")
     bot.answer_callback_query(call.id)
     bot.send_message(call.from_user.id, f"📡 Шпионское устройство активировано!\n\n🔍 Подсказка: {hint}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("use_correct_"))
+def cb_use_correct(call):
+    parts = call.data.split("_")
+    chat_id = int(parts[2])
+    player_id = int(parts[3])
+    if call.from_user.id != player_id:
+        bot.answer_callback_query(call.id, "❌ Это не твой предмет!")
+        return
+    game = get_game(chat_id)
+    if not game:
+        bot.answer_callback_query(call.id, "❌ Игра не найдена!")
+        return
+    row = get_user(call.from_user.id, call.from_user.first_name)
+    if not row or row[6] < 1:
+        bot.answer_callback_query(call.id, "❌ У вас нет этого предмета. Купите в /shop", show_alert=True)
+        return
+    correct = game['correct_answer'].get(player_id)
+    if not correct:
+        bot.answer_callback_query(call.id, "❌ Вопрос не найден!")
+        return
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE users SET correct_answer=correct_answer-1 WHERE user_id=?", (call.from_user.id,))
+    conn.commit()
+    conn.close()
+    add_log(call.from_user.id, "USE_CORRECT", f"chat={chat_id}")
+    bot.answer_callback_query(call.id)
+    bot.send_message(call.from_user.id, f"🎭 Правильный ответ на вопрос:\n\n✅ {correct}")
 
 def start_player_timer(chat_id, player_id, player_name):
     def timer():
@@ -1492,7 +1567,6 @@ def start_voting(chat_id):
     game = get_game(chat_id)
     if not game: return
     players = active_players(game)
-    # 1 ойыншы қалса — шпион жеңеді
     if len(players) <= 1:
         t_str = elapsed_str(game['start_time'])
         spy_name = next((p.first_name for p in game['players'] if p.id == game['spy']), "?")
@@ -1564,18 +1638,14 @@ def finish_voting(chat_id):
         f"  {next((p.first_name for p in players if p.id == uid), '?')}: {v} голос(а)"
         for uid, v in sorted(votes.items(), key=lambda x: -x[1])
     )
-    # Ничья — повтор жоқ
     if len(top_ids) > 1:
-        tied_names = ", ".join(next((p.first_name for p in players if p.id == uid), "?") for uid in top_ids)
         bot.send_message(chat_id,
-            f"📊 Результаты:\n{vote_log_text}\n\n🔢 Итог:\n{results}\n\n"
-            f"⚖️ Ничья! Шпион остался в тени...")
+            f"📊 Результаты:\n{vote_log_text}\n\n🔢 Итог:\n{results}\n\n⚖️ Ничья! Шпион остался в тени...")
         next_round(chat_id)
         return
     max_votes_id = top_ids[0]
     max_votes_name = next((p.first_name for p in players if p.id == max_votes_id), "?")
     bot.send_message(chat_id, f"📊 Результаты:\n{vote_log_text}\n\n🔢 Итог:\n{results}\n\n❌ Выбывает: {max_votes_name}")
-    # ⚖️ Защита голоса — автоматты
     row = get_user(max_votes_id, max_votes_name)
     if row and row[5] > 0:
         conn = sqlite3.connect(DB_PATH)
@@ -1599,7 +1669,6 @@ def finish_voting(chat_id):
         bot.send_message(elim.id, "❌ Тебя выбрали шпионом, но ты им не был...\nТы выбыл.")
     except Exception:
         pass
-    # 1 ойыншы қалса тексер
     ap = active_players(game)
     if len(ap) <= 1:
         end_game(chat_id,
@@ -1704,7 +1773,7 @@ def next_round(chat_id):
     game['vote_detail'] = {}
     game['timer_msg_id'] = None
     game['current_player_index'] = 0
-    game['rifle_used'] = False  # Раунд сайын винтовка қайтадан қолданылады
+    game['rifle_used'] = False
     max_rounds = game.get('max_rounds', 3)
     bot.send_message(chat_id, f"🔄 Начинается Раунд {game['round']} из {max_rounds}!\n\n⏱ У каждого 60 секунд на ответ!")
     prepare_questions(chat_id)
@@ -1718,4 +1787,4 @@ try:
 except Exception as e:
     logger.warning(f"Webhook error: {e}")
 bot.infinity_polling(timeout=60, long_polling_timeout=60)
-# v5
+# v6
