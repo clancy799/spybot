@@ -1,3 +1,2 @@
 pyTelegramBotAPI
-psycopg2-binary==2.9.9pyTelegramBotAPI
-psycopg2-binarypyTelegramBotAPI
+psycopg2-binary
