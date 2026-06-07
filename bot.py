@@ -18,7 +18,7 @@ SUPER_ADMIN_ID = 0  # Осы жерге өз ID-іңді қой
 games = {}
 
 # ─── DATABASE ────────────────────────────────────────────────────────────────
-DB_PATH = "/data/spy_game.db"
+DB_PATH = "spy_game.db"
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
