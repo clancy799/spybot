@@ -4,7 +4,8 @@ import random
 import time
 import threading
 import logging
-import sqlite3
+import psycopg2
+import psycopg2.extras
 import os
 from datetime import datetime
 
@@ -18,13 +19,13 @@ SUPER_ADMIN_ID = 0  # Осы жерге өз ID-іңді қой
 games = {}
 
 # ─── DATABASE ────────────────────────────────────────────────────────────────
-DB_PATH = "spy_game.db"
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
+        user_id BIGINT PRIMARY KEY,
         name TEXT,
         cash INTEGER DEFAULT 0,
         diamonds INTEGER DEFAULT 0,
@@ -37,36 +38,34 @@ def init_db():
         is_banned INTEGER DEFAULT 0,
         is_muted INTEGER DEFAULT 0,
         is_donor INTEGER DEFAULT 0,
-        registered_at TEXT DEFAULT (datetime('now'))
+        registered_at TIMESTAMP DEFAULT NOW()
     )''')
-    # Ескі database-ке жаңа бағандарды қос
     for col, defn in [
         ('is_banned', 'INTEGER DEFAULT 0'),
         ('is_muted', 'INTEGER DEFAULT 0'),
         ('is_donor', 'INTEGER DEFAULT 0'),
     ]:
         try:
-            c.execute(f'ALTER TABLE users ADD COLUMN {col} {defn}')
+            c.execute(f'ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {defn}')
         except Exception:
-            pass
-    # Барлық бандарды алып тастау
+            conn.rollback()
     try:
         c.execute('UPDATE users SET is_banned=0 WHERE is_banned=1')
     except Exception:
-        pass
+        conn.rollback()
     c.execute('''CREATE TABLE IF NOT EXISTS admins (
-        user_id INTEGER PRIMARY KEY,
+        user_id BIGINT PRIMARY KEY,
         name TEXT,
         level INTEGER DEFAULT 1,
-        added_by INTEGER,
-        added_at TEXT DEFAULT (datetime('now'))
+        added_by BIGINT,
+        added_at TIMESTAMP DEFAULT NOW()
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
+        id SERIAL PRIMARY KEY,
+        user_id BIGINT,
         action TEXT,
         details TEXT,
-        timestamp TEXT DEFAULT (datetime('now'))
+        timestamp TIMESTAMP DEFAULT NOW()
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS disabled_locations (
         location_name TEXT PRIMARY KEY
@@ -76,57 +75,57 @@ def init_db():
 
 def add_log(user_id, action, details=""):
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = psycopg2.connect(DATABASE_URL)
         c = conn.cursor()
-        c.execute("INSERT INTO logs (user_id, action, details) VALUES (?, ?, ?)", (user_id, action, details))
+        c.execute("INSERT INTO logs (user_id, action, details) VALUES (%s, %s, %s)", (user_id, action, details))
         conn.commit()
         conn.close()
     except Exception as e:
         logger.warning(f"Log error: {e}")
 
 def get_user(user_id, name):
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
+    c.execute("SELECT * FROM users WHERE user_id=%s", (user_id,))
     row = c.fetchone()
     if not row:
-        c.execute("INSERT INTO users (user_id, name) VALUES (?, ?)", (user_id, name))
+        c.execute("INSERT INTO users (user_id, name) VALUES (%s, %s)", (user_id, name))
         conn.commit()
-        c.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
+        c.execute("SELECT * FROM users WHERE user_id=%s", (user_id,))
         row = c.fetchone()
     conn.close()
     return row
 
 def add_cash(user_id, amount):
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute("UPDATE users SET cash = cash + ? WHERE user_id=?", (amount, user_id))
+    c.execute("UPDATE users SET cash = cash + %s WHERE user_id=%s", (amount, user_id))
     conn.commit()
     conn.close()
 
 def add_diamonds(user_id, amount):
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute("UPDATE users SET diamonds = diamonds + ? WHERE user_id=?", (amount, user_id))
+    c.execute("UPDATE users SET diamonds = diamonds + %s WHERE user_id=%s", (amount, user_id))
     conn.commit()
     conn.close()
 
 def add_game(user_id, won):
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     if won:
-        c.execute("UPDATE users SET total_games=total_games+1, missions_success=missions_success+1 WHERE user_id=?", (user_id,))
+        c.execute("UPDATE users SET total_games=total_games+1, missions_success=missions_success+1 WHERE user_id=%s", (user_id,))
     else:
-        c.execute("UPDATE users SET total_games=total_games+1 WHERE user_id=?", (user_id,))
+        c.execute("UPDATE users SET total_games=total_games+1 WHERE user_id=%s", (user_id,))
     conn.commit()
     conn.close()
 
 def is_admin(user_id):
     if user_id == SUPER_ADMIN_ID:
         return True
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute("SELECT user_id FROM admins WHERE user_id=?", (user_id,))
+    c.execute("SELECT user_id FROM admins WHERE user_id=%s", (user_id,))
     row = c.fetchone()
     conn.close()
     return row is not None
@@ -135,7 +134,7 @@ def is_super_admin(user_id):
     return user_id == SUPER_ADMIN_ID
 
 def get_enabled_locations():
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute("SELECT location_name FROM disabled_locations")
     disabled = [r[0] for r in c.fetchall()]
@@ -364,13 +363,27 @@ def elapsed_str(start_time):
 def active_players(game):
     return [p for p in game['players'] if p.id not in game['eliminated']]
 
-def end_game(chat_id, text, spy_won=False):
+def check_min_players(chat_id):
+    """2 немесе одан аз ойыншы қалса ойын аяқталады"""
+    game = get_game(chat_id)
+    if not game: return False
+    ap = active_players(game)
+    if len(ap) <= 2:
+        t_str = elapsed_str(game['start_time'])
+        spy_name = next((p.first_name for p in game['players'] if p.id == game['spy']), "?")
+        end_game(chat_id,
+            f"🕵️ Осталось слишком мало игроков!\n\nШпионом был: {spy_name}\nЛокация: {game['location']}\n\n❌ Шпион победил!\n\n⏱ {t_str}",
+            spy_won=True)
+        return True
+    return False
+
+def end_game(chat_id, text, spy_won=False, forced=False):
     game = get_game(chat_id)
     try:
         bot.send_message(chat_id, text)
     except Exception:
         pass
-    if game:
+    if game and not forced:
         spy_id = game.get('spy')
         players = game.get('players', [])
         location = game.get('location', '?')
@@ -439,7 +452,7 @@ def cmd_achievements(message):
 
 @bot.message_handler(commands=['rating'])
 def cmd_rating(message):
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute("SELECT name, missions_success, total_games FROM users WHERE total_games > 0 ORDER BY missions_success DESC LIMIT 10")
     rows = c.fetchall()
@@ -462,7 +475,7 @@ def cmd_endgame(message):
     if message.from_user.id != game['host'] and not is_admin(message.from_user.id):
         bot.send_message(chat_id, "❌ Только организатор может завершить игру!")
         return
-    end_game(chat_id, "🛑 Игра завершена!")
+    end_game(chat_id, "🛑 Игра завершена!", forced=True)
 
 # ─── МАГАЗИН ─────────────────────────────────────────────────────────────────
 @bot.message_handler(commands=['shop'])
@@ -471,7 +484,7 @@ def cmd_shop(message):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("💵 Купить за наличные", callback_data="shop_cash"))
     markup.add(types.InlineKeyboardButton("💎 Купить за алмазы", callback_data="shop_diamonds"))
-    markup.add(types.InlineKeyboardButton("⭐ Купить алмазы за Stars", callback_data="shop_buy_diamonds"))
+
     bot.send_message(message.chat.id, "🛒 Магазин\n\nВыбери категорию:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "shop_cash")
@@ -480,7 +493,7 @@ def cb_shop_cash(call):
     cash = row[2] if row else 0
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("⚖️ Защита голоса — 💵 100", callback_data="buy_voice_protect"))
-    markup.add(types.InlineKeyboardButton("🎭 Один правильный ответ — 💵 150", callback_data="buy_correct_answer"))
+    markup.add(types.InlineKeyboardButton("📡 Шпионское устройство — 💵 150", callback_data="buy_spy_device_cash"))
     markup.add(types.InlineKeyboardButton("◀️ Назад", callback_data="shop_back"))
     bot.edit_message_text(
         f"💵 Магазин за наличные\n\nБаланс: 💵 {cash}\n\n"
@@ -494,7 +507,7 @@ def cb_shop_diamonds(call):
     diamonds = row[3] if row else 0
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("🔫 Винтовка — 💎 1", callback_data="buy_rifle"))
-    markup.add(types.InlineKeyboardButton("📡 Шпионское устройство — 💎 1", callback_data="buy_spy_device"))
+    markup.add(types.InlineKeyboardButton("🎭 Один правильный ответ — 💎 1", callback_data="buy_correct_answer_diamond"))
     markup.add(types.InlineKeyboardButton("◀️ Назад", callback_data="shop_back"))
     bot.edit_message_text(
         f"💎 Магазин за алмазы\n\nБаланс: 💎 {diamonds}\n\n"
@@ -553,7 +566,7 @@ def cb_shop_back(call):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("💵 Купить за наличные", callback_data="shop_cash"))
     markup.add(types.InlineKeyboardButton("💎 Купить за алмазы", callback_data="shop_diamonds"))
-    markup.add(types.InlineKeyboardButton("⭐ Купить алмазы за Stars", callback_data="shop_buy_diamonds"))
+
     bot.edit_message_text("🛒 Магазин\n\nВыбери категорию:", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "buy_voice_protect")
@@ -562,9 +575,9 @@ def cb_buy_voice_protect(call):
     if row[2] < 100:
         bot.answer_callback_query(call.id, "❌ Недостаточно наличных!")
         return
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute("UPDATE users SET cash=cash-100, voice_protect=voice_protect+1 WHERE user_id=?", (call.from_user.id,))
+    c.execute("UPDATE users SET cash=cash-100, voice_protect=voice_protect+1 WHERE user_id=%s", (call.from_user.id,))
     conn.commit()
     conn.close()
     add_log(call.from_user.id, "BUY", "voice_protect")
@@ -577,9 +590,9 @@ def cb_buy_correct_answer(call):
     if row[2] < 150:
         bot.answer_callback_query(call.id, "❌ Недостаточно наличных!")
         return
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute("UPDATE users SET cash=cash-150, correct_answer=correct_answer+1 WHERE user_id=?", (call.from_user.id,))
+    c.execute("UPDATE users SET cash=cash-150, correct_answer=correct_answer+1 WHERE user_id=%s", (call.from_user.id,))
     conn.commit()
     conn.close()
     add_log(call.from_user.id, "BUY", "correct_answer")
@@ -592,9 +605,9 @@ def cb_buy_rifle(call):
     if row[3] < 1:
         bot.answer_callback_query(call.id, "❌ Недостаточно алмазов!")
         return
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute("UPDATE users SET diamonds=diamonds-1, rifle=rifle+1 WHERE user_id=?", (call.from_user.id,))
+    c.execute("UPDATE users SET diamonds=diamonds-1, rifle=rifle+1 WHERE user_id=%s", (call.from_user.id,))
     conn.commit()
     conn.close()
     add_log(call.from_user.id, "BUY", "rifle")
@@ -607,9 +620,9 @@ def cb_buy_spy_device(call):
     if row[3] < 1:
         bot.answer_callback_query(call.id, "❌ Недостаточно алмазов!")
         return
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute("UPDATE users SET diamonds=diamonds-1, spy_device=spy_device+1 WHERE user_id=?", (call.from_user.id,))
+    c.execute("UPDATE users SET diamonds=diamonds-1, spy_device=spy_device+1 WHERE user_id=%s", (call.from_user.id,))
     conn.commit()
     conn.close()
     add_log(call.from_user.id, "BUY", "spy_device")
@@ -620,7 +633,7 @@ def cb_buy_spy_device(call):
 @bot.message_handler(commands=['admin'])
 def cmd_admin(message):
     if not is_admin(message.from_user.id): return
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM users")
     total_users = c.fetchone()[0]
@@ -660,7 +673,7 @@ def admin_main_markup(user_id):
 @bot.callback_query_handler(func=lambda call: call.data == "adm_back")
 def cb_adm_back(call):
     if not is_admin(call.from_user.id): return
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM users")
     total_users = c.fetchone()[0]
@@ -701,7 +714,7 @@ def cb_adm_game(call):
 def cb_adm_stop(call):
     if not is_admin(call.from_user.id): return
     chat_id = int(call.data.replace("adm_stop_", ""))
-    end_game(chat_id, "🛑 Игра остановлена администратором!")
+    end_game(chat_id, "🛑 Игра остановлена администратором!", forced=True)
     add_log(call.from_user.id, "ADMIN_STOP", f"chat={chat_id}")
     bot.answer_callback_query(call.id, f"✅ Игра {chat_id} остановлена!")
 
@@ -745,7 +758,7 @@ def cb_adm_setspy_info(call):
 @bot.callback_query_handler(func=lambda call: call.data == "adm_locs")
 def cb_adm_locs(call):
     if not is_admin(call.from_user.id): return
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute("SELECT location_name FROM disabled_locations")
     disabled = [r[0] for r in c.fetchall()]
@@ -765,15 +778,15 @@ def cb_adm_locs(call):
 def cb_adm_loc_toggle(call):
     if not is_admin(call.from_user.id): return
     loc = call.data.replace("adm_loc_", "")
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute("SELECT location_name FROM disabled_locations WHERE location_name=?", (loc,))
+    c.execute("SELECT location_name FROM disabled_locations WHERE location_name=%s", (loc,))
     exists = c.fetchone()
     if exists:
-        c.execute("DELETE FROM disabled_locations WHERE location_name=?", (loc,))
+        c.execute("DELETE FROM disabled_locations WHERE location_name=%s", (loc,))
         msg = f"✅ {loc} включена!"
     else:
-        c.execute("INSERT INTO disabled_locations (location_name) VALUES (?)", (loc,))
+        c.execute("INSERT INTO disabled_locations (location_name) VALUES (%s)", (loc,))
         msg = f"❌ {loc} отключена!"
     conn.commit()
     conn.close()
@@ -830,7 +843,7 @@ def cb_adm_eco_info(call):
 @bot.callback_query_handler(func=lambda call: call.data == "adm_broadcast_menu")
 def cb_adm_broadcast_menu(call):
     if not is_admin(call.from_user.id): return
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM users")
     total = c.fetchone()[0]
@@ -848,7 +861,7 @@ def cb_adm_broadcast_menu(call):
 @bot.callback_query_handler(func=lambda call: call.data == "adm_logs")
 def cb_adm_logs(call):
     if not is_admin(call.from_user.id): return
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute("SELECT user_id, action, details, timestamp FROM logs ORDER BY id DESC LIMIT 15")
     rows = c.fetchall()
@@ -897,9 +910,7 @@ def cb_adm_s_info(call):
 def cb_adm_s_backup(call):
     if not is_super_admin(call.from_user.id): return
     try:
-        with open(DB_PATH, 'rb') as f:
-            bot.send_document(call.from_user.id, f, caption="💾 Резервная копия базы данных")
-        bot.answer_callback_query(call.id, "✅ Отправлено!")
+        bot.answer_callback_query(call.id, "✅ PostgreSQL — резервная копия через Railway Backups!")
         add_log(call.from_user.id, "SUPER_BACKUP", "")
     except Exception as e:
         bot.answer_callback_query(call.id, f"❌ Ошибка: {e}")
@@ -919,7 +930,7 @@ def cb_adm_s_resetall(call):
 @bot.callback_query_handler(func=lambda call: call.data == "adm_s_resetall_confirm")
 def cb_adm_s_resetall_confirm(call):
     if not is_super_admin(call.from_user.id): return
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute("UPDATE users SET cash=0, diamonds=0, missions_success=0, total_games=0, spy_device=0, voice_protect=0, correct_answer=0, rifle=0")
     conn.commit()
@@ -966,9 +977,9 @@ def cmd_ban(message):
         bot.send_message(message.chat.id, "❌ Формат: /ban [user_id]")
         return
     user_id = int(parts[1])
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (user_id,))
+    c.execute("UPDATE users SET is_banned=1 WHERE user_id=%s", (user_id,))
     conn.commit()
     conn.close()
     add_log(message.from_user.id, "ADMIN_BAN", f"target={user_id}")
@@ -982,9 +993,9 @@ def cmd_unban(message):
         bot.send_message(message.chat.id, "❌ Формат: /unban [user_id]")
         return
     user_id = int(parts[1])
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,))
+    c.execute("UPDATE users SET is_banned=0 WHERE user_id=%s", (user_id,))
     conn.commit()
     conn.close()
     add_log(message.from_user.id, "ADMIN_UNBAN", f"target={user_id}")
@@ -998,9 +1009,9 @@ def cmd_mute(message):
         bot.send_message(message.chat.id, "❌ Формат: /mute [user_id]")
         return
     user_id = int(parts[1])
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute("UPDATE users SET is_muted=1 WHERE user_id=?", (user_id,))
+    c.execute("UPDATE users SET is_muted=1 WHERE user_id=%s", (user_id,))
     conn.commit()
     conn.close()
     add_log(message.from_user.id, "ADMIN_MUTE", f"target={user_id}")
@@ -1014,9 +1025,9 @@ def cmd_setdonor(message):
         bot.send_message(message.chat.id, "❌ Формат: /setdonor [user_id]")
         return
     user_id = int(parts[1])
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute("UPDATE users SET is_donor=1 WHERE user_id=?", (user_id,))
+    c.execute("UPDATE users SET is_donor=1 WHERE user_id=%s", (user_id,))
     conn.commit()
     conn.close()
     add_log(message.from_user.id, "ADMIN_SETDONOR", f"target={user_id}")
@@ -1030,9 +1041,9 @@ def cmd_resetuser(message):
         bot.send_message(message.chat.id, "❌ Формат: /resetuser [user_id]")
         return
     user_id = int(parts[1])
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute("UPDATE users SET cash=0, diamonds=0, spy_device=0, voice_protect=0, correct_answer=0, rifle=0, missions_success=0, total_games=0 WHERE user_id=?", (user_id,))
+    c.execute("UPDATE users SET cash=0, diamonds=0, spy_device=0, voice_protect=0, correct_answer=0, rifle=0, missions_success=0, total_games=0 WHERE user_id=%s", (user_id,))
     conn.commit()
     conn.close()
     add_log(message.from_user.id, "ADMIN_RESETUSER", f"target={user_id}")
@@ -1045,7 +1056,7 @@ def cmd_broadcast(message):
     if not text:
         bot.send_message(message.chat.id, "❌ Формат: /broadcast [текст]")
         return
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute("SELECT user_id FROM users")
     users = c.fetchall()
@@ -1092,7 +1103,7 @@ def cmd_setspy(message):
 @bot.message_handler(commands=['stats'])
 def cmd_stats(message):
     if not is_admin(message.from_user.id): return
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM users")
     total_users = c.fetchone()[0]
@@ -1122,9 +1133,9 @@ def cmd_addadmin(message):
         bot.send_message(message.chat.id, "❌ Формат: /addadmin [user_id]")
         return
     user_id = int(parts[1])
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO admins (user_id, name, added_by) VALUES (?, ?, ?)",
+    c.execute("INSERT INTO admins (user_id, name, added_by) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
               (user_id, "Admin", message.from_user.id))
     conn.commit()
     conn.close()
@@ -1139,9 +1150,9 @@ def cmd_removeadmin(message):
         bot.send_message(message.chat.id, "❌ Формат: /removeadmin [user_id]")
         return
     user_id = int(parts[1])
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute("DELETE FROM admins WHERE user_id=?", (user_id,))
+    c.execute("DELETE FROM admins WHERE user_id=%s", (user_id,))
     conn.commit()
     conn.close()
     add_log(message.from_user.id, "SUPER_REMOVEADMIN", f"target={user_id}")
@@ -1417,9 +1428,9 @@ def cb_rifle_shoot(call):
     if not target or target_id in game['eliminated']:
         bot.answer_callback_query(call.id, "❌ Игрок уже выбыл!")
         return
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute("UPDATE users SET rifle=rifle-1 WHERE user_id=?", (call.from_user.id,))
+    c.execute("UPDATE users SET rifle=rifle-1 WHERE user_id=%s", (call.from_user.id,))
     conn.commit()
     conn.close()
     game['eliminated'].append(target_id)
@@ -1432,6 +1443,8 @@ def cb_rifle_shoot(call):
         bot.send_message(target_id, "💀 Вы были устранены шпионом и выбыли из игры.\n\nНаблюдайте за происходящим!")
     except Exception:
         pass
+    if check_min_players(chat_id):
+        return
     ap = active_players(game)
     if len(ap) <= 1:
         t_str = elapsed_str(game['start_time'])
@@ -1451,9 +1464,9 @@ def cb_use_device(call):
     if not row or row[4] < 1:
         bot.answer_callback_query(call.id, "❌ У вас нет устройства. Купите в /shop", show_alert=True)
         return
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute("UPDATE users SET spy_device=spy_device-1 WHERE user_id=?", (call.from_user.id,))
+    c.execute("UPDATE users SET spy_device=spy_device-1 WHERE user_id=%s", (call.from_user.id,))
     conn.commit()
     conn.close()
     hint = LOCATION_HINTS.get(game['location'], "Место остаётся загадкой...")
@@ -1481,9 +1494,9 @@ def cb_use_correct(call):
     if not correct:
         bot.answer_callback_query(call.id, "❌ Вопрос не найден!")
         return
-    conn = sqlite3.connect(DB_PATH)
+    conn = psycopg2.connect(DATABASE_URL)
     c = conn.cursor()
-    c.execute("UPDATE users SET correct_answer=correct_answer-1 WHERE user_id=?", (call.from_user.id,))
+    c.execute("UPDATE users SET correct_answer=correct_answer-1 WHERE user_id=%s", (call.from_user.id,))
     conn.commit()
     conn.close()
     add_log(call.from_user.id, "USE_CORRECT", f"chat={chat_id}")
@@ -1648,9 +1661,9 @@ def finish_voting(chat_id):
     bot.send_message(chat_id, f"📊 Результаты:\n{vote_log_text}\n\n🔢 Итог:\n{results}\n\n❌ Выбывает: {max_votes_name}")
     row = get_user(max_votes_id, max_votes_name)
     if row and row[5] > 0:
-        conn = sqlite3.connect(DB_PATH)
+        conn = psycopg2.connect(DATABASE_URL)
         c = conn.cursor()
-        c.execute("UPDATE users SET voice_protect=voice_protect-1 WHERE user_id=?", (max_votes_id,))
+        c.execute("UPDATE users SET voice_protect=voice_protect-1 WHERE user_id=%s", (max_votes_id,))
         conn.commit()
         conn.close()
         bot.send_message(chat_id, f"⚖️ {max_votes_name} использовал защиту голоса и остался в игре!")
@@ -1669,11 +1682,7 @@ def finish_voting(chat_id):
         bot.send_message(elim.id, "❌ Тебя выбрали шпионом, но ты им не был...\nТы выбыл.")
     except Exception:
         pass
-    ap = active_players(game)
-    if len(ap) <= 1:
-        end_game(chat_id,
-            f"🕵️ Игра окончена!\n\nШпионом был: {spy_name}\nЛокация: {game['location']}\n\n❌ Шпион победил!\n\n⏱ {t_str}",
-            spy_won=True)
+    if check_min_players(chat_id):
         return
     send_spy_guess(chat_id)
 
