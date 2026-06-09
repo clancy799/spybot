@@ -12,7 +12,7 @@ from config import SUPER_ADMIN_ID
 router = Router()
 
 
-@router.message(Command("start"))
+@router.message(Command("start"), F.chat.type == "private")
 async def cmd_start(message: Message, session: AsyncSession):
     user = message.from_user
     await get_user(session, user.id, user.first_name)
