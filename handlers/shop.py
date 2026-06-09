@@ -88,7 +88,7 @@ async def cb_buy_stars(call: CallbackQuery):
     await call.bot.send_invoice(
         chat_id=call.from_user.id,
         title=f"💎 {pkg['diamonds']} алмаз",
-        description=f"{pkg['diamonds']} алмаз — ойында қолдануға болады",
+        description=f"{pkg['diamonds']} алмаз — используется в игре",
         payload=f"{pkg['payload']}_{call.from_user.id}",
         provider_token="",
         currency="XTR",
