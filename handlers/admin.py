@@ -71,7 +71,10 @@ async def cb_adm_game(call: CallbackQuery, session: AsyncSession):
     buttons = []
     for chat_id, game in games_ref.items():
         status = "▶️" if game.get("started") else "⏳"
-        text += f"{status} Chat: {chat_id} | {len(game['players'])} игр.\n"
+        spy_id = game.get("spy")
+        spy_name = next((p.first_name for p in game["players"] if p.id == spy_id), "?")
+        location = game.get("location", "?")
+        text += f"{status} Chat: {chat_id} | {len(game["players"])} игр.\n🕵️ Шпион: {spy_name}\n📍 Локация: {location}\n\n"
         buttons.append([InlineKeyboardButton(text=f"🛑 Остановить {chat_id}", callback_data=f"adm_stop_{chat_id}")])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")])
     await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
