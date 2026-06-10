@@ -444,18 +444,30 @@ async def cmd_removeadmin(message: Message, session: AsyncSession):
     await message.answer(f"✅ Игрок {user_id} убран из админов!")
 
 
+
+
 @router.message(Command("setspy"))
 async def cmd_setspy(message: Message, session: AsyncSession):
     if not await is_admin(session, message.from_user.id, SUPER_ADMIN_ID):
         return
     parts = message.text.split()
     if len(parts) != 3:
-        await message.answer("❌ Формат: /setspy [user_id] [количество]")
+        await message.answer("❌ Формат: /setspy [chat_id] [user_id]")
         return
     try:
-        user_id, amount = int(parts[1]), int(parts[2])
-        await add_spy_device(session, user_id, amount)
-        await add_log(session, message.from_user.id, "ADMIN_SETSPY", f"target={user_id} amount={amount}")
-        await message.answer(f"✅ Игроку {user_id} добавлено 🔍 {amount} шпионских устройств!")
+        chat_id, user_id = int(parts[1]), int(parts[2])
+        from handlers.game import games
+        game = games.get(chat_id)
+        if not game or not game.get("started"):
+            await message.answer("❌ В этом чате нет активной игры!")
+            return
+        player_ids = [p.id for p in game["players"]]
+        if user_id not in player_ids:
+            await message.answer("❌ Этот игрок не участвует в игре!")
+            return
+        old_spy = game["spy"]
+        game["spy"] = user_id
+        await add_log(session, message.from_user.id, "ADMIN_SETSPY", f"chat={chat_id} old={old_spy} new={user_id}")
+        await message.answer(f"✅ Шпион изменён на {user_id}!")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
