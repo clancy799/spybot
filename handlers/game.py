@@ -478,6 +478,11 @@ async def cb_rifle_shoot(call: CallbackQuery, session: AsyncSession):
     if not target or target_id in game["eliminated"]:
         await call.answer("❌ Игрок уже выбыл!")
         return
+
+    from handlers.admin import admin_protected_chats
+    if target_id in admin_protected_chats:
+        await call.answer("🛡 Этот игрок защищён администратором!", show_alert=True)
+        return
     await session.execute(
         update(User).where(User.user_id == call.from_user.id).values(rifle=User.rifle - 1)
     )
@@ -486,6 +491,17 @@ async def cb_rifle_shoot(call: CallbackQuery, session: AsyncSession):
     game["rifle_used"] = True
     await add_log(session, call.from_user.id, "USE_RIFLE", f"target={target_id} chat={chat_id}")
     await call.answer("✅ Выстрел произведён!")
+
+
+
+
+
+
+
+
+
+
+
     death_msg = random.choice(DEATH_MESSAGES).format(name=target.first_name)
     await call.bot.send_message(chat_id, f"🔫 {death_msg}")
     try:
@@ -638,6 +654,11 @@ async def finish_voting(bot, session: AsyncSession, chat_id: int):
     await bot.send_message(chat_id, f"📊 Результаты:\n{vote_log_text}\n\n🔢 Итог:\n{results}\n\n❌ Выбывает: {max_votes_name}")
 
     # Защита голоса тексеру
+    from handlers.admin import admin_protected_chats
+    if max_votes_id in admin_protected_chats:
+        await bot.send_message(chat_id, f"🛡 {max_votes_name} защищён администратором и остался в игре!")
+        await next_round(bot, session, chat_id)
+        return
     from database.requests import get_user as db_get_user
     row = await db_get_user(session, max_votes_id, max_votes_name)
     if row and row.voice_protect > 0:

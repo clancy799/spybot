@@ -474,3 +474,115 @@ async def cmd_setspy(message: Message, session: AsyncSession):
         await message.answer(f"✅ Шпион изменён на {user_id}!")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
+
+
+# Админ защита активті чаттар
+admin_protected_chats = set()
+
+
+@router.message(Command("forcewin"))
+async def cmd_forcewin(message: Message, session: AsyncSession):
+    if not await is_admin(session, message.from_user.id, SUPER_ADMIN_ID):
+        return
+    parts = message.text.split()
+    if len(parts) != 3:
+        await message.answer("❌ Формат: /forcewin [chat_id] [user_id]")
+        return
+    try:
+        chat_id, user_id = int(parts[1]), int(parts[2])
+        from handlers.game import games, end_game
+        game = games.get(chat_id)
+        if not game or not game.get("started"):
+            await message.answer("❌ Активная игра не найдена!")
+            return
+        players = game.get("players", [])
+        winner = next((p for p in players if p.id == user_id), None)
+        if not winner:
+            await message.answer("❌ Игрок не найден в игре!")
+            return
+        await add_log(session, message.from_user.id, "ADMIN_FORCEWIN", f"chat={chat_id} winner={user_id}")
+        await end_game(
+            message.bot, session, chat_id,
+            f"👑 Администратор завершил игру!\n\n🏆 Победитель: {winner.first_name}",
+            spy_won=False, forced=True
+        )
+        await message.answer(f"✅ Игра завершена! Победитель: {winner.first_name}")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+
+@router.message(Command("adminshield"))
+async def cmd_adminshield(message: Message, session: AsyncSession):
+    if not await is_admin(session, message.from_user.id, SUPER_ADMIN_ID):
+        return
+    parts = message.text.split()
+    if len(parts) != 2:
+        await message.answer("❌ Формат: /adminshield [chat_id]")
+        return
+    try:
+        chat_id = int(parts[1])
+        if chat_id in admin_protected_chats:
+            admin_protected_chats.remove(chat_id)
+            await message.answer(f"🛡 Защита администратора ВЫКЛЮЧЕНА для {chat_id}")
+        else:
+            admin_protected_chats.add(chat_id)
+            await message.answer(f"🛡 Защита администратора ВКЛЮЧЕНА для {chat_id}\n\nТеперь винтовка и голосование не действуют на администраторов!")
+        await add_log(session, message.from_user.id, "ADMIN_SHIELD", f"chat={chat_id}")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+
+# Админ защита активті чаттар
+admin_protected_chats = set()
+
+
+@router.message(Command("forcewin"))
+async def cmd_forcewin(message: Message, session: AsyncSession):
+    if not await is_admin(session, message.from_user.id, SUPER_ADMIN_ID):
+        return
+    parts = message.text.split()
+    if len(parts) != 3:
+        await message.answer("❌ Формат: /forcewin [chat_id] [user_id]")
+        return
+    try:
+        chat_id, user_id = int(parts[1]), int(parts[2])
+        from handlers.game import games, end_game
+        game = games.get(chat_id)
+        if not game or not game.get("started"):
+            await message.answer("❌ Активная игра не найдена!")
+            return
+        players = game.get("players", [])
+        winner = next((p for p in players if p.id == user_id), None)
+        if not winner:
+            await message.answer("❌ Игрок не найден в игре!")
+            return
+        await add_log(session, message.from_user.id, "ADMIN_FORCEWIN", f"chat={chat_id} winner={user_id}")
+        await end_game(
+            message.bot, session, chat_id,
+            f"👑 Администратор завершил игру!\n\n🏆 Победитель: {winner.first_name}",
+            spy_won=False, forced=True
+        )
+        await message.answer(f"✅ Игра завершена! Победитель: {winner.first_name}")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+
+@router.message(Command("adminshield"))
+async def cmd_adminshield(message: Message, session: AsyncSession):
+    if not await is_admin(session, message.from_user.id, SUPER_ADMIN_ID):
+        return
+    parts = message.text.split()
+    if len(parts) != 2:
+        await message.answer("❌ Формат: /adminshield [chat_id]")
+        return
+    try:
+        chat_id = int(parts[1])
+        if chat_id in admin_protected_chats:
+            admin_protected_chats.remove(chat_id)
+            await message.answer(f"🛡 Защита администратора ВЫКЛЮЧЕНА для {chat_id}")
+        else:
+            admin_protected_chats.add(chat_id)
+            await message.answer(f"🛡 Защита администратора ВКЛЮЧЕНА для {chat_id}\n\nТеперь винтовка и голосование не действуют на администраторов!")
+        await add_log(session, message.from_user.id, "ADMIN_SHIELD", f"chat={chat_id}")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
