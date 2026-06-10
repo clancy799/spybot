@@ -32,6 +32,8 @@ async def main():
     set_games_ref(games)
 
     # Деректер базасын инициализациялау
+    import subprocess
+    subprocess.run(["alembic", "upgrade", "head"])
     await init_db()
     logger.info("✅ База данных инициализирована!")
 
