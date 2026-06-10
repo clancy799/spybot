@@ -423,7 +423,8 @@ async def cb_answer(call: CallbackQuery, session: AsyncSession):
     except Exception:
         pass
 
-    await call.bot.send_message(chat_id, f"✅ {call.from_user.first_name} ответил!")
+    await call.bot.send_message(chat_id, f"💬 {call.from_user.first_name} отвечает:
+➡️ {chosen}")
     await send_next_player_question(call.bot, session, chat_id)
 
 
