@@ -586,3 +586,31 @@ async def cmd_adminshield(message: Message, session: AsyncSession):
         await add_log(session, message.from_user.id, "ADMIN_SHIELD", f"chat={chat_id}")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
+
+
+@router.callback_query(F.data == "adm_roles")
+async def cb_adm_roles(call: CallbackQuery, session: AsyncSession):
+    if not await is_admin(session, call.from_user.id, SUPER_ADMIN_ID):
+        return
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🕵️ /setspy [chat_id] [user_id]", callback_data="adm_roles_setspy")],
+        [InlineKeyboardButton(text="🏆 /forcewin [chat_id] [user_id]", callback_data="adm_roles_forcewin")],
+        [InlineKeyboardButton(text="🛡 /adminshield [chat_id]", callback_data="adm_roles_shield")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")],
+    ])
+    await call.message.edit_text("🕵️ Рөлдерді басқару:\n\nКомандаларды жеке чатта жазасың:", reply_markup=markup)
+
+
+@router.callback_query(F.data == "adm_roles_setspy")
+async def cb_adm_roles_setspy(call: CallbackQuery):
+    await call.answer("🕵️ Шпионды ауыстыру:\n/setspy [chat_id] [user_id]\n\nОйын жүріп тұрған кезде ғана жұмыс жасайды!", show_alert=True)
+
+
+@router.callback_query(F.data == "adm_roles_forcewin")
+async def cb_adm_roles_forcewin(call: CallbackQuery):
+    await call.answer("🏆 Жеңімпаз белгілеу:\n/forcewin [chat_id] [user_id]\n\nСол адам жеңімпаз болып ойын аяқталады!", show_alert=True)
+
+
+@router.callback_query(F.data == "adm_roles_shield")
+async def cb_adm_roles_shield(call: CallbackQuery):
+    await call.answer("🛡 Админ қорғаныс:\n/adminshield [chat_id]\n\nҚосылса винтовка және голос әсер етпейді. Қайта жазса өшеді!", show_alert=True)
