@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import update, select, func
 
 from database.models import User, Admin, Log
-from database.requests import get_user, add_cash, add_diamonds, add_log, is_admin, get_stats, get_all_user_ids, get_last_logs
+from database.requests import add_spy_device, get_user, add_cash, add_diamonds, add_log, is_admin, get_stats, get_all_user_ids, get_last_logs
 from config import SUPER_ADMIN_ID
 import asyncio
 
@@ -442,3 +442,20 @@ async def cmd_removeadmin(message: Message, session: AsyncSession):
         await session.commit()
     await add_log(session, message.from_user.id, "SUPER_REMOVEADMIN", f"target={user_id}")
     await message.answer(f"✅ Игрок {user_id} убран из админов!")
+
+
+@router.message(Command("setspy"))
+async def cmd_setspy(message: Message, session: AsyncSession):
+    if not await is_admin(session, message.from_user.id, SUPER_ADMIN_ID):
+        return
+    parts = message.text.split()
+    if len(parts) != 3:
+        await message.answer("❌ Формат: /setspy [user_id] [количество]")
+        return
+    try:
+        user_id, amount = int(parts[1]), int(parts[2])
+        await add_spy_device(session, user_id, amount)
+        await add_log(session, message.from_user.id, "ADMIN_SETSPY", f"target={user_id} amount={amount}")
+        await message.answer(f"✅ Игроку {user_id} добавлено 🔍 {amount} шпионских устройств!")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")

@@ -94,3 +94,10 @@ async def get_last_logs(session: AsyncSession, limit: int = 15):
         .limit(limit)
     )
     return result.fetchall()
+
+
+async def add_spy_device(session: AsyncSession, user_id: int, amount: int):
+    await session.execute(
+        update(User).where(User.user_id == user_id).values(spy_device=User.spy_device + amount)
+    )
+    await session.commit()
