@@ -205,11 +205,9 @@ async def cb_start_game(call: CallbackQuery, session: AsyncSession):
     game = get_game(chat_id)
     # Хост немесе бот админдері ғана баса алады
     member = await call.bot.get_chat_member(chat_id, call.from_user.id)
-is_chat_admin = member.status in ("administrator", "creator")
-if call.from_user.id != game["host"] and not is_chat_admin and not await is_admin(session, call.from_user.id, SUPER_ADMIN_ID):
-    await call.answer("❌ Только администраторы группы могут начать игру!", show_alert=True)
-    return f call.from_user.id != game["host"] and not await is_admin(session, call.from_user.id, SUPER_ADMIN_ID):
-        await call.answer("Только организатор может начать!")
+    is_chat_admin = member.status in ("administrator", "creator")
+    if call.from_user.id != game["host"] and not is_chat_admin and not await is_admin(session, call.from_user.id, SUPER_ADMIN_ID):
+        await call.answer("❌ Только администраторы группы могут начать игру!", show_alert=True)
         return
     if len(game["players"]) < 3:
         await call.answer("Нужно минимум 3 игрока!")
