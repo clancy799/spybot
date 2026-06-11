@@ -241,7 +241,7 @@ async def start_the_game(bot, session: AsyncSession, chat_id: int):
     lobby_msg_id = game.get("lobby_msg_id")
     if lobby_msg_id:
         try:
-            await bot.unpin_chat_message(chat_id, lobby_msg_id)
+            await bot.unpin_chat_message(chat_id=chat_id, message_id=lobby_msg_id)
             await bot.edit_message_reply_markup(chat_id, lobby_msg_id, reply_markup=None)
         except Exception:
             pass
