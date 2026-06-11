@@ -4,7 +4,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-from config import BOT_TOKEN
+from config import BOT_TOKEN, SUPER_ADMIN_ID
 from database.engine import init_db
 from middlewares.db import DbSessionMiddleware
 from handlers import common, shop, admin, game
