@@ -54,9 +54,9 @@ async def main():
     logger.info("✅ База данных инициализирована!")
 
     # Ботты іске қосу
-    asyncio.create_task(send_daily_backup(bot, SUPER_ADMIN_ID))
     await bot.delete_webhook(drop_pending_updates=True)
     logger.info("✅ Бот запущен!")
+    asyncio.ensure_future(send_daily_backup(bot, SUPER_ADMIN_ID))
     await dp.start_polling(bot)
 
 
