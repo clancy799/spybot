@@ -154,6 +154,11 @@ async def cmd_game(message: Message, session: AsyncSession):
             return
         if len(g["players"]) < 3:
             await message.bot.send_message(chat_id, "⏱ Время вышло! Недостаточно игроков. Игра отменена.")
+            try:
+                await message.bot.unpin_chat_message(chat_id)
+                await message.bot.delete_message(chat_id, g["lobby_msg_id"])
+            except Exception:
+                pass
             games.pop(chat_id, None)
             return
         await message.bot.send_message(chat_id, "⏱ 3 минуты прошло — игра начинается!")
