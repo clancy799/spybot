@@ -15,6 +15,22 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
+
+async def send_daily_backup(bot, admin_id: int):
+    import subprocess, os
+    from datetime import datetime
+    while True:
+        await asyncio.sleep(86400)  # 24 сағат
+        try:
+            db_url = os.environ.get("DATABASE_URL", "")
+            filename = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.sql"
+            subprocess.run(["pg_dump", db_url, "-f", filename], capture_output=True)
+            with open(filename, "rb") as f:
+                await bot.send_document(admin_id, f, caption=f"📦 DB Backup {datetime.now().strftime('%Y-%m-%d')}")
+            os.remove(filename)
+        except Exception as e:
+            await bot.send_message(admin_id, f"❌ Backup қатесі: {e}")
+
 async def main():
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
@@ -38,6 +54,7 @@ async def main():
     logger.info("✅ База данных инициализирована!")
 
     # Ботты іске қосу
+    asyncio.create_task(send_daily_backup(bot, SUPER_ADMIN_ID))
     await bot.delete_webhook(drop_pending_updates=True)
     logger.info("✅ Бот запущен!")
     await dp.start_polling(bot)
